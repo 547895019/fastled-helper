@@ -1,6 +1,16 @@
 ---
 name: fastled-helper
-description: Use FastLED library for ESP32/Arduino LED strip control. Covers setup, color management (CRGB/CHSV), animations, palettes, power management, and chipset-specific configurations. Triggers on phrases like "FastLED", "LED strip", "WS2812", "NeoPixel", "APA102", "LED animation", "RGB LED", "addressable LED".
+description: Use FastLED library for ESP32/Arduino LED strip control. Covers setup, color management (CRGB/CHSV), animations, palettes, power management, chipset-specific configurations, and browser-based preview/simulation via the `fastled` WASM compiler. Triggers on phrases like "FastLED", "LED strip", "WS2812", "NeoPixel", "APA102", "LED animation", "RGB LED", "addressable LED", "FastLED preview", "FastLED simulator", "run LED sketch in browser", "FastLED WASM".
+homepage: https://fastled.io/
+metadata:
+  {
+    "fastled-helper":
+      {
+        "emoji": "🤖",
+        "requires": { "bins": ["fled"], "env": ["FASTLED_PATH"] },
+        "primaryEnv": "FASTLED_PATH",
+      },
+  }
 ---
 
 # FastLED Skill
@@ -52,6 +62,141 @@ void loop() {
     delay(30);              // Wait before next frame
 }
 ```
+
+## Browser Preview & Iteration (WASM)
+
+You can run and preview a FastLED sketch in the browser without hardware using the **`fled`** WASM compiler (`zackees/fastled-wasm`). It compiles `.ino` to WASM via Emscripten, serves a virtual-LED viewer, and hot-reloads on file save.
+
+### Install (one-time) — source install (recommended for Linux)
+
+The pip-published `fastled` binary is PyInstaller-bundled and requires **glibc ≥ 2.38** (i.e. Ubuntu 24.04+). On Ubuntu 22.04 / Debian Bookworm / Raspberry Pi OS Bookworm it errors with `GLIBC_2.38 not found`. Source install bypasses this entirely.
+
+Prerequisites: **Python ≥ 3.10**, **Rust toolchain (≥ 1.85)**, system packages (`libssl-dev`, `pkg-config`, `python-is-python3`), Emscripten SDK (auto-fetched via `clang-tool-chain`).
+
+```bash
+# 1. System packages (Debian/Ubuntu)
+sudo apt update && sudo apt install -y \
+    pkg-config libssl-dev python-is-python3 build-essential git
+
+# 2. Rust toolchain (skip if you already have cargo)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+source "$HOME/.cargo/env"
+
+# 3. Python build backend
+pip install --user maturin
+
+# 4. Clone & install the Python package (builds the PyO3 extension, ~3-10 min first time)
+git clone https://github.com/zackees/fastled-wasm.git ~/fastled-wasm
+cd ~/fastled-wasm
+pip install --user .
+
+# 5. CRITICAL: also build the standalone Rust binary `fastled`
+#    `pip install .` only produces the _native.abi3.so extension via maturin.
+#    The Rust CLI in `crates/fastled-cli` must be installed separately —
+#    `fled` shells out to it for internal flags like --internal-ensure-fastled-repo.
+cargo install --path crates/fastled-cli
+
+# 6. Emscripten SDK (auto-downloaded on first invocation, ~100 MB)
+pip install --user clang-tool-chain
+clang-tool-chain-emcc --version       # retry if IncompleteRead — see Troubleshooting
+
+# 7. (Python 3.10 only) Patch missing stdlib `tomllib` — see Troubleshooting
+
+# 8. Verify
+which fled && fled --version          # Python entry point
+ls ~/.cargo/bin/fastled               # Rust binary (used internally and for --serve-dir)
+```
+
+> **Command name map**:
+> - `fled` / `fastled-wasm` — Python entry points (compile, watch, hot-reload)
+> - `~/.cargo/bin/fastled` — Rust binary (handles `--serve-dir`, `--internal-ensure-*`)
+> - The Python-registered `fastled` console-script at `~/.local/bin/fastled` is a *shim* that intentionally rejects internal flags. When you need to call `--serve-dir`, invoke `~/.cargo/bin/fastled` explicitly.
+
+
+### Run a sketch
+
+In any directory containing the sketch (`*.ino`):
+
+```bash
+fled --fastled-path $FASTLED_PATH  # source install
+```
+
+This:
+1. Compiles the sketch to `<sketch>/fastled_js/` (~3 s on first run, ~1 s incremental).
+2. (On systems with a desktop) starts a local server and opens the browser to a virtual LED viewer.
+3. Watches files; on save it recompiles and pushes the new WASM via SSE (hot reload).
+
+### Serving a pre-compiled output
+
+If you're on a remote/headless box, or `fled` exits after compile without starting a server, serve the output directory manually. **`--serve-dir` is handled by the Rust CLI, not the Python shim** — invoke the cargo-installed binary directly:
+
+```bash
+~/.cargo/bin/fastled --serve-dir <sketch>/fastled_js --no-https
+# Prints e.g.: Serving /path/to/fastled_js at http://127.0.0.1:54914
+```
+
+### Two-terminal hot-reload workflow (recommended for headless/SSH)
+
+The cleanest dev loop on a remote box is to split serving and compiling across two shells. The server has built-in SSE that pushes new WASM to the open browser whenever the file changes — no manual refresh needed:
+
+```bash
+# Terminal 1 — persistent server (start once, leave running)
+cd ~/sketch_dir
+~/.cargo/bin/fastled --serve-dir fastled_js --no-https
+
+# Terminal 2 — recompile whenever you edit the sketch
+cd ~/sketch_dir
+fled --fastled-path $FASTLED_PATH
+```
+
+Workflow:
+1. Edit `.ino` in your editor.
+2. Run `fled --fastled-path $FASTLED_PATH` in terminal 2 — produces a new `fastled_js/fastled.wasm`.
+3. Server in terminal 1 detects the file change, pushes via SSE.
+4. Browser auto-refreshes the visualization.
+
+This avoids the browser cache trap entirely (no need for "Empty Cache and Hard Reload" between iterations) because the server sends a cache-busting reload signal each compile.
+
+### Making LEDs actually visible in the viewer
+
+Register a default linear-strip layout in `setup()`:
+
+```cpp
+#include "fl/math/screenmap.h"
+
+void setup() {
+    auto screenMap = fl::ScreenMap::DefaultStrip(NUM_LEDS);
+    FastLED.addLeds<WS2812, DATA_PIN, GRB>(leds, NUM_LEDS)
+        .setScreenMap(screenMap);
+}
+```
+
+
+### Compile modes
+
+| Flag | Use for |
+|---|---|
+| `--quick` (default) | Fast iteration during development |
+| `--release` | Final/shareable build (~1/3 smaller) |
+| `--debug` | DWARF symbols for in-browser step-through debugging |
+
+### Useful flags
+
+| Flag | Purpose |
+|---|---|
+| `--just-compile` | Build only, don't start server (CI/scripts) |
+| `--app` | Open in native Tauri window instead of browser |
+| `--fastled-path <dir>` | Use a local FastLED checkout (for library development) |
+| `--serve-dir <dir>` | Serve a previously compiled output directory |
+| `--init <example>` | Scaffold a new sketch directory from a built-in example |
+| `--no-https` | Disable HTTPS, use plain HTTP for the local server |
+
+
+### Limitations
+
+- WASM runs on the **main thread**: long `delay()` calls freeze the UI, and background tabs get throttled. Prefer `EVERY_N_MILLISECONDS` or `millis()`-based timing over `delay()`.
+- Hardware-only APIs (I²C, SPI peripherals, ESP32-specific drivers) are stubbed — only the LED output is simulated.
+- Power-limiting (`setMaxPowerInVoltsAndMilliamps`) is computed but has no real-world effect in preview.
 
 ## Color Management
 
@@ -440,3 +585,5 @@ void fireEffect() {
 - GitHub: https://github.com/FastLED/FastLED
 - Wiki: https://github.com/FastLED/FastLED/wiki
 - Demos: https://github.com/FastLED/FastLED/tree/master/examples
+- WASM compiler (browser preview): https://github.com/zackees/fastled-wasm
+- `fastled` on PyPI: https://pypi.org/project/fastled/
