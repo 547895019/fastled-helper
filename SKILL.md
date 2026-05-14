@@ -159,9 +159,10 @@ This avoids the browser cache trap entirely (no need for "Empty Cache and Hard R
 
 ### Making LEDs actually visible in the viewer
 
-Register a default linear-strip layout in `setup()`:
-
+Register a default LED strip layout in `setup()`:
 ```cpp
+#ifdef __EMSCRIPTEN__
+
 #include "fl/math/screenmap.h"
 
 void setup() {
@@ -169,6 +170,43 @@ void setup() {
     FastLED.addLeds<WS2812, DATA_PIN, GRB>(leds, NUM_LEDS)
         .setScreenMap(screenMap);
 }
+#endif  // __EMSCRIPTEN__
+```
+
+Register a custom LED strip layout in `setup()`:
+
+```cpp
+#ifdef __EMSCRIPTEN__
+
+#include "fl/stl/vector.h"
+#include "fl/stl/json.h"
+#include "fl/stl/span.h"
+#include "fl/math/screenmap.h"
+#include "fl/math/math.h"
+
+using fl::vec2f;
+using fl::vector;
+
+void make_map(int stepx, int stepy, int num, fl::vector<vec2f>* _map) {
+    float x = 0;
+    float y = 0;
+    fl::vector<vec2f>& map = *_map;
+    for (int16_t i = 0; i < num; i++) {
+        map.push_back(vec2f{x, y});
+        x += stepx;
+        y += stepy;
+    }
+}
+
+void setup() {
+	fl::vector<vec2f> map;
+    make_map(1, 1, NUM_LEDS, &map);
+    fl::ScreenMap screenmap = fl::ScreenMap(map.data(), map.size());
+    
+    FastLED.addLeds<WS2812, DATA_PIN, GRB>(leds, NUM_LEDS)
+        .setScreenMap(screenmap);
+}
+#endif  // __EMSCRIPTEN__
 ```
 
 
